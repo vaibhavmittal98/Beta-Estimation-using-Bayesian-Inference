@@ -1,0 +1,148 @@
+---
+title: "Bayesian project"
+author: "Me"
+output:
+  pdf_document
+---
+
+
+```{r}
+library(readr)
+library(StanHeaders)
+library(loo)
+all_betas <- read_csv("all_betas.csv")
+blist <- all_betas$amzn_beta
+
+```
+
+
+
+```{r}
+library('rstan')
+simple='
+data {
+  int<lower=0> N;
+  vector[N] b_acc;
+}
+parameters {
+  real mu;
+  real<lower=0> sigma;
+}
+model {
+  mu ~ normal(1, 4);
+  sigma ~ gamma(1, 1);
+  b_acc ~ normal(mu, sigma);
+}
+generated quantities {
+  real post_b;
+  vector[N] log_lik;
+  post_b = normal_rng(mu, sigma);
+  for (n in 1:N){
+    log_lik[n] = normal_lpdf(b_acc[n] | mu, sigma);
+  }
+}
+'
+
+test_data = list (N = 5, b_acc = blist[1:5])
+fiti = stan (model_code = simple, data = test_data)
+fiti
+
+companies <- c("amzn_beta", "msft_beta", "aapl_beta", "goog_beta", "ibm_beta",  "sony_beta", "tsm_beta",  "nvda_beta", "nok_beta")
+
+company_models_s <- c()
+sm <-  stan_model (model_code = simple)
+all_k <- c()
+for (co in companies){
+  blist <- as.list(all_betas[, co])
+  bad_count = 0
+  models <- c()
+  khats <- c()
+  post_b <- c(1,1,1,1)
+  for (i in 5:17){
+    sampled_model <- sampling(sm, data=list (N = 5, b_acc = unlist(unname(blist))[(i-4):(i)]))
+    a <- loo(sampled_model)
+    khats <- c(khats, a$diagnostics$pareto_k)
+    post_b <- c(post_b, mean(as.data.frame(sampled_model)$post_b))
+  }
+  df2 <- data.frame(x=all_betas$year, y=post_b)
+  plot(all_betas$year, unlist(unname(blist)), 'ol', col="red", ylab=co)
+  lines(df2)
+  all_k <- c(all_k, khats)
+  company_models_s <- c(company_models_s, models)
+}
+hist(all_k,
+    main = "K of PSIS-LOO with simple model",
+    xlim = c(0.0, 1.0), col="Gray",)
+company_models_s
+```
+
+
+```{r}
+loo(sampled_model)
+```
+
+
+```{r}
+hierarchal <- "
+data {
+  int<lower=0> N;
+  int<lower=0> j;
+  vector[j] sector_beta;
+  vector[N] b_acc;
+}
+parameters {
+  real mu;
+  real hyper_mu;
+  real<lower=0> sigma;
+  real<lower=0> hyper_sigma;
+}
+model {
+  hyper_mu ~ normal(1, 4);
+  hyper_sigma ~ gamma(1, 1);
+  
+  mu ~ normal(hyper_mu, hyper_sigma/N);
+  sigma ~ gamma(1, 1);
+  
+  sector_beta ~ normal(hyper_mu, hyper_sigma);
+  b_acc ~ normal(mu, sigma);
+}
+generated quantities {
+  real post_b;
+  post_b = normal_rng(mu, sigma);
+}"
+
+abc_beta = all_betas[, c("amzn_beta", "msft_beta", "aapl_beta", "goog_beta", "ibm_beta",  "sony_beta", "tsm_beta",  "nvda_beta", "nok_beta")]
+company_models <- c()
+hm <-  stan_model (model_code = hierarchal)
+sm <-  stan_model (model_code = simple)
+all_k <- c()
+for (co in companies){
+  blist <- as.list(all_betas[, co])
+  bad_count = 0
+  models <- c()
+  khats <- c()
+  post_b_h <- c(1,1,1,1)
+  post_b <- c(1,1,1,1)
+  for (i in 5:17){
+    test_data <- list (N = 5, j=9, sector_beta=unlist(unname(as.list(as.data.frame(t(abs(abc_beta[i,])))))), b_acc=unlist(unname(blist))[(i-4):(i)])
+    sampled_model <- sampling(sm, data=list (N = 5, b_acc = unlist(unname(blist))[(i-4):(i)]))
+    sampled_h_model <- sampling(hm, data=test_data)
+    #a <- loo(sampled_model)
+    #khats <- c(khats, a$diagnostics$pareto_k)
+    post_b <- c(post_b, mean(as.data.frame(sampled_model)$post_b))
+    post_b_h <- c(post_b_h, mean(as.data.frame(sampled_h_model)$post_b))
+  }
+  df2 <- data.frame(x=all_betas$year, y=post_b)
+  df3 <- data.frame(x=all_betas$year, y=post_b_h)
+  plot(all_betas$year, abs(unlist(unname(blist))), 'ol', col="red", ylab=co, xlab="year")
+  lines(df2, col="black")# simple
+  lines(df3, col="blue")# hierarchical
+  all_k <- c(all_k, khats)
+  company_models_s <- c(company_models, models)
+}
+hist(all_k,
+     main = "K of PSIS-LOO with hierarchical model",
+     xlim = c(0.0, 1.0), col="Gray",)
+company_models
+```
+
